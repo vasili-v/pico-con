@@ -31,13 +31,15 @@ pico_con_loop(struct pico_con_command *commands, size_t input_buffer_size);
 
 The pico\_con\_loop runs CLI loop processing user input. A set of CLI commands should be passed as an array of pico\_con\_command structures:
 ```C
+typedef int (*pico_con_commnad_handler_t)(size_t argc, char *argv[]);
+
 struct pico_con_command
 {
     const char                 *name;
     pico_con_commnad_handler_t handler;
 };
 ```
-where the name field is a case-sensetive command name and the handler is a pointer to a command function. The pico\_con\_commnad\_handler\_t defied as `typedef int (*pico_con_commnad_handler_t)(void)`. A command handler should return zero (PICO\_CON\_COMMAND\_SUCCESS) to continue running pico\_con\_loop or -1 (PICO\_CON\_COMMAND\_ABORT) to stop it. The last entry in the array must have NULL handler. The pico\_con\_loop uses at most input\_buffer\_size characters for a single command (excluding terminating zero charater).
+where the name field is a case-sensetive command name and the handler is a pointer to a command function. When the CLI gets a command, it calls a respective handler with a number of arguments in argc and their values in argv. The handler should return zero (PICO\_CON\_COMMAND\_SUCCESS) to continue running pico\_con\_loop or -1 (PICO\_CON\_COMMAND\_ABORT) to stop it. The last entry in the array must have NULL handler. The pico\_con\_loop uses at most input\_buffer\_size characters for a single command (excluding terminating zero charater).
 
 #### Return Values
 

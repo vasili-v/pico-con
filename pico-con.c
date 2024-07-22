@@ -40,10 +40,69 @@ static void pico_con_input_free(struct pico_con_input *input)
 	input->buffer = NULL;
 }
 
+static char *pico_con_input_get_token(struct pico_con_input *input, size_t start, size_t end)
+{
+	size_t size = end - start;
+	char *token = malloc(size + 1);
+	if (!token)
+	{
+		return NULL;
+	}
+
+	memcpy(token, input->buffer+start, size);
+	token[size] = '\0';
+
+	return token;
+}
+
+#define PARSER_ARG_CAPACITY_MIN 16
+
+static size_t pico_con_parser_expand_args(size_t argc, char ***argv, size_t capacity)
+{
+	if (!*argv)
+	{
+		if (capacity <= 0) capacity = PARSER_ARG_CAPACITY_MIN;
+		*argv = malloc(capacity*sizeof(char *));
+		if (!*argv)
+		{
+			return 0;
+		}
+	}
+	else if (argc >= capacity)
+	{
+		return 0;
+	}
+
+	return capacity;
+}
+
+static void pico_con_parser_cleanup(char **command, size_t *argc, char ***argv)
+{
+	if (*command)
+	{
+		free(*command);
+		*command = NULL;
+	}
+
+	if (*argv)
+	{
+		while (*argc > 0)
+		{
+			(*argc)--;
+			free((*argv)[*argc]);
+		}
+
+		free(*argv);
+		*argv = NULL;
+	}
+}
+
 #define PARSER_STATE_PRE_COMMAND 0
 #define PARSER_STATE_COMMAND     1
+#define PARSER_STATE_PRE_ARG     2
+#define PARSER_STATE_ARG         3
 
-static int pico_con_parse(struct pico_con_input *input, char **command)
+static int pico_con_parse(struct pico_con_input *input, char **command, size_t *argc, char ***argv)
 {
 #ifdef DEBUG
 	printf("\ninput: \"%s\"\n", input->buffer);
@@ -54,7 +113,11 @@ static int pico_con_parse(struct pico_con_input *input, char **command)
 	int parser_state = PARSER_STATE_PRE_COMMAND;
 	size_t i = 0;
 	size_t start = 0;
-	char *token = NULL;
+
+	size_t arg_capacity = 0;
+	*argc = 0;
+	*argv = NULL;
+
 	while (i <= input->buffer_size && input->buffer[i] != '\0')
 	{
 		switch (parser_state)
@@ -62,19 +125,42 @@ static int pico_con_parse(struct pico_con_input *input, char **command)
 		case PARSER_STATE_COMMAND:
 			if (isspace(input->buffer[i]))
 			{
-				size_t size = i - start;
-				token = malloc(size + 1);
-				if (!token)
+				parser_state = PARSER_STATE_PRE_ARG;
+
+				*command = pico_con_input_get_token(input, start, i);
+				if (!*command)
 				{
+					pico_con_parser_cleanup(command, argc, argv);
+					return -1;
+				}
+			}
+			break;
+		case PARSER_STATE_PRE_ARG:
+			if (!isspace(input->buffer[i]))
+			{
+				start = i;
+				parser_state = PARSER_STATE_ARG;
+			}
+			break;
+		case PARSER_STATE_ARG:
+			if (isspace(input->buffer[i]))
+			{
+				parser_state = PARSER_STATE_PRE_ARG;
+
+				arg_capacity = pico_con_parser_expand_args(*argc, argv, arg_capacity);
+				if (!arg_capacity)
+				{
+					pico_con_parser_cleanup(command, argc, argv);
 					return -1;
 				}
 
-				memcpy(token, input->buffer+start, size);
-				token[size] = '\0';
-
-				*command = token;
-
-				return 0;
+				(*argv)[*argc] = pico_con_input_get_token(input, start, i);
+				if (!(*argv)[*argc])
+				{
+					pico_con_parser_cleanup(command, argc, argv);
+					return -1;
+				}
+				(*argc)++;
 			}
 			break;
 		default:
@@ -90,17 +176,29 @@ static int pico_con_parse(struct pico_con_input *input, char **command)
 
 	if (parser_state == PARSER_STATE_COMMAND)
 	{
-		size_t size = i - start;
-		token = malloc(size + 1);
-		if (!token)
+		*command = pico_con_input_get_token(input, start, i);
+		if (!*command)
 		{
+			pico_con_parser_cleanup(command, argc, argv);
+			return -1;
+		}
+	}
+	else if (parser_state == PARSER_STATE_ARG)
+	{
+		arg_capacity = pico_con_parser_expand_args(*argc, argv, arg_capacity);
+		if (!arg_capacity)
+		{
+			pico_con_parser_cleanup(command, argc, argv);
 			return -1;
 		}
 
-		memcpy(token, input->buffer+start, size);
-		token[size] = '\0';
-
-		*command = token;
+		(*argv)[*argc] = pico_con_input_get_token(input, start, i);
+		if (!(*argv)[*argc])
+		{
+			pico_con_parser_cleanup(command, argc, argv);
+			return -1;
+		}
+		(*argc)++;
 	}
 
 	return 0;
@@ -158,7 +256,9 @@ static int pico_con_input_handle_char(struct pico_con_input *input, int ch, stru
 			input->idx = 0;
 
 			char *command = NULL;
-			if (pico_con_parse(input, &command) != 0)
+			size_t argc = 0;
+			char **argv = NULL;
+			if (pico_con_parse(input, &command, &argc, &argv) != 0)
 			{
 				printf("Failed to parse input \"%s\"\n> ", input->buffer);
 				return -1;
@@ -173,9 +273,9 @@ static int pico_con_input_handle_char(struct pico_con_input *input, int ch, stru
 			{
 				if (commands[i].name && !strcmp(command, commands[i].name))
 				{
-					int r = commands[i].handler();
+					int r = commands[i].handler(argc, argv);
 
-					free(command);
+					pico_con_parser_cleanup(&command, &argc, &argv);
 					if (r != PICO_CON_COMMAND_SUCCESS)
 					{
 						return -1;
@@ -189,8 +289,10 @@ static int pico_con_input_handle_char(struct pico_con_input *input, int ch, stru
 				i++;
 			}
 
-			printf("Unknown command: \"%s\"\n> ", command);
-			free(command);
+			if (command[0]) printf("Unknown command: \"%s\"\n", command);
+			putchar('>');
+			putchar(' ');
+			pico_con_parser_cleanup(&command, &argc, &argv);
 		}
 		else if (ch == CH_ASCII_ETX)
 		{

@@ -4,7 +4,7 @@
 #define PICO_CON_COMMAND_SUCCESS  0
 #define PICO_CON_COMMAND_ABORT   -1
 
-typedef int (*pico_con_commnad_handler_t)(void);
+typedef int (*pico_con_commnad_handler_t)(size_t argc, char *argv[]);
 
 struct pico_con_command
 {
