@@ -55,7 +55,8 @@ static char *pico_con_input_get_token(struct pico_con_input *input, size_t start
 	return token;
 }
 
-#define PARSER_ARG_CAPACITY_MIN 16
+#define PARSER_ARG_CAPACITY_MIN    16
+#define PARSER_ARG_CAPACITY_FACTOR 3
 
 static size_t pico_con_parser_expand_args(size_t argc, char ***argv, size_t capacity)
 {
@@ -70,7 +71,18 @@ static size_t pico_con_parser_expand_args(size_t argc, char ***argv, size_t capa
 	}
 	else if (argc >= capacity)
 	{
-		return 0;
+		size_t new_capacity = capacity*PARSER_ARG_CAPACITY_FACTOR;
+		if (new_capacity > PICO_CON_PARSER_ARG_CAPACITY_MAX) new_capacity = PICO_CON_PARSER_ARG_CAPACITY_MAX;
+		if (new_capacity < PARSER_ARG_CAPACITY_MIN) new_capacity = PARSER_ARG_CAPACITY_MIN;
+		if (new_capacity > capacity)
+		{
+			char **new_argv = realloc(*argv, new_capacity*sizeof(char *));
+			if (new_argv)
+			{
+				*argv = new_argv;
+				return new_capacity;
+			}
+		}
 	}
 
 	return capacity;
@@ -154,13 +166,16 @@ static int pico_con_parse(struct pico_con_input *input, char **command, size_t *
 					return -1;
 				}
 
-				(*argv)[*argc] = pico_con_input_get_token(input, start, i);
-				if (!(*argv)[*argc])
+				if (*argc < arg_capacity)
 				{
-					pico_con_parser_cleanup(command, argc, argv);
-					return -1;
+					(*argv)[*argc] = pico_con_input_get_token(input, start, i);
+					if (!(*argv)[*argc])
+					{
+						pico_con_parser_cleanup(command, argc, argv);
+						return -1;
+					}
+					(*argc)++;
 				}
-				(*argc)++;
 			}
 			break;
 		default:
@@ -192,13 +207,16 @@ static int pico_con_parse(struct pico_con_input *input, char **command, size_t *
 			return -1;
 		}
 
-		(*argv)[*argc] = pico_con_input_get_token(input, start, i);
-		if (!(*argv)[*argc])
+		if (*argc < arg_capacity)
 		{
-			pico_con_parser_cleanup(command, argc, argv);
-			return -1;
+			(*argv)[*argc] = pico_con_input_get_token(input, start, i);
+			if (!(*argv)[*argc])
+			{
+				pico_con_parser_cleanup(command, argc, argv);
+				return -1;
+			}
+			(*argc)++;
 		}
-		(*argc)++;
 	}
 
 	return 0;
