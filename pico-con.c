@@ -6,6 +6,9 @@
 #include "pico-con.h"
 
 #define CH_ASCII_ETX 0x03
+#define CH_ASCII_ENQ 0x05
+#define CH_ASCII_ACK 0x06
+#define CH_ASCII_NAK 0x15
 #define CH_ASCII_ESC 0x1b
 
 #define INPUT_STATE_CHAR 0
@@ -14,6 +17,7 @@
 
 struct pico_con_input
 {
+	int    mode;
 	int    state;
 	size_t idx;
 	size_t buffer_size;
@@ -22,6 +26,7 @@ struct pico_con_input
 
 static int pico_con_input_init(struct pico_con_input *input, size_t input_buffer_size)
 {
+	input->mode = MODE_HUMAN_READABLE;
 	input->state = INPUT_STATE_CHAR;
 	input->idx = 0;
 	input->buffer_size = input_buffer_size;
@@ -117,9 +122,10 @@ static void pico_con_parser_cleanup(char **command, size_t *argc, char ***argv)
 static int pico_con_parse(struct pico_con_input *input, char **command, size_t *argc, char ***argv)
 {
 #ifdef DEBUG
-	printf("\ninput: \"%s\"\n", input->buffer);
-#else
-	putchar('\n');
+	if (input->mode == MODE_HUMAN_READABLE)
+	{
+		printf("\ninput: \"%s\"", input->buffer);
+	}
 #endif
 
 	int parser_state = PARSER_STATE_PRE_COMMAND;
@@ -247,9 +253,13 @@ static int pico_con_input_handle_char(struct pico_con_input *input, int ch, stru
 			{
 				input->buffer[input->idx] = ch;
 				input->idx++;
-				putchar(ch);
+
+				if (input->mode == MODE_HUMAN_READABLE)
+				{
+					putchar(ch);
+				}
 			}
-			else
+			else if (input->mode == MODE_HUMAN_READABLE)
 			{
 				putchar('\a');
 			}
@@ -259,11 +269,14 @@ static int pico_con_input_handle_char(struct pico_con_input *input, int ch, stru
 			if (input->idx > 0)
 			{
 				input->idx--;
-				putchar(ch);
-				putchar(' ');
-				putchar(ch);
+				if (input->mode == MODE_HUMAN_READABLE)
+				{
+					putchar(ch);
+					putchar(' ');
+					putchar(ch);
+				}
 			}
-			else
+			else if (input->mode == MODE_HUMAN_READABLE)
 			{
 				putchar('\a');
 			}
@@ -278,12 +291,22 @@ static int pico_con_input_handle_char(struct pico_con_input *input, int ch, stru
 			char **argv = NULL;
 			if (pico_con_parse(input, &command, &argc, &argv) != 0)
 			{
-				printf("Failed to parse input \"%s\"\n> ", input->buffer);
+				if (input->mode == MODE_BATCH)
+				{
+					putchar(CH_ASCII_NAK);
+				}
+				else
+				{
+					printf("\nFailed to parse input \"%s\"\n", input->buffer);
+				}
 				return -1;
 			}
 
 #ifdef DEBUG
-			printf("Command: \"%s\"\n", command);
+			if (input->mode == MODE_HUMAN_READABLE)
+			{
+				printf("\nCommand: \"%s\"", command);
+			}
 #endif
 
 			size_t i = 0;
@@ -291,6 +314,15 @@ static int pico_con_input_handle_char(struct pico_con_input *input, int ch, stru
 			{
 				if (commands[i].name && !strcmp(command, commands[i].name))
 				{
+					if (input->mode == MODE_BATCH)
+					{
+						putchar(CH_ASCII_ACK);
+					}
+					else
+					{
+						putchar('\n');
+					}
+
 					int r = commands[i].handler(argc, argv);
 
 					pico_con_parser_cleanup(&command, &argc, &argv);
@@ -299,51 +331,106 @@ static int pico_con_input_handle_char(struct pico_con_input *input, int ch, stru
 						return -1;
 					}
 
-					putchar('>');
-					putchar(' ');
+					if (input->mode == MODE_BATCH)
+					{
+						putchar(CH_ASCII_ENQ);
+					}
+					else
+					{
+						putchar('>');
+						putchar(' ');
+					}
+
 					return 0;
 				}
 
 				i++;
 			}
 
-			if (command[0]) printf("Unknown command: \"%s\"\n", command);
-			putchar('>');
-			putchar(' ');
+			if (command[0])
+			{
+				if (input->mode == MODE_BATCH)
+				{
+					putchar(CH_ASCII_NAK);
+				}
+				else
+				{
+					printf("\nUnknown command: \"%s\"\n", command);
+				}
+			}
+			else if (input->mode == MODE_HUMAN_READABLE)
+			{
+				putchar('\n');
+			}
+
 			pico_con_parser_cleanup(&command, &argc, &argv);
+
+			if (input->mode == MODE_BATCH)
+			{
+				putchar(CH_ASCII_ENQ);
+			}
+			else
+			{
+				putchar('>');
+				putchar(' ');
+			}
 		}
 		else if (ch == CH_ASCII_ETX)
 		{
 			input->idx = 0;
-			printf(" Ctrl+C\n> ");
+			if (input->mode == MODE_BATCH)
+			{
+				putchar(CH_ASCII_ENQ);
+			}
+			else
+			{
+				printf(" Ctrl+C\n> ");
+			}
 		}
-		else if (ch == CH_ASCII_ESC)
+		else if (input->mode == MODE_HUMAN_READABLE)
 		{
-			input->state = INPUT_STATE_ESC;
-		}
-		else
-		{
+			if (ch == CH_ASCII_ESC)
+			{
+				input->state = INPUT_STATE_ESC;
+			}
+			else
+			{
 #ifdef DEBUG
-			input->buffer[input->idx] = '\0';
-			printf("\ngot: 0x%02X\n> %s", ch, input->buffer);
+				input->buffer[input->idx] = '\0';
+				printf("\ngot: 0x%02X\n> %s", ch, input->buffer);
 #else
-			putchar('\a');
+				putchar('\a');
 #endif
+			}
 		}
 	}
 
 	return 0;
 }
 
-int pico_con_loop(struct pico_con_command *commands, size_t input_buffer_size)
+int pico_con_loop(struct pico_con_command *commands, size_t input_buffer_size, int mode)
 {
 	struct pico_con_input input;
 	if (pico_con_input_init(&input, input_buffer_size) != 0)
 	{
 		return -1;
 	}
+	input.mode = mode;
 
-	printf("> ");
+	switch (input.mode)
+	{
+	case MODE_BATCH:
+		putchar(CH_ASCII_ENQ);
+		break;
+
+	case MODE_HUMAN_READABLE:
+		printf("> ");
+		break;
+
+	default:
+		pico_con_input_free(&input);
+		return -1;
+	}
 
 	while (1)
 	{
